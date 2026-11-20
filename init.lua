@@ -1,7 +1,6 @@
 vim.g.bigfile_disable = false
 vim.g.mapleader = " "
 vim.opt.autoindent = true
-vim.opt.clipboard = "unnamedplus"
 vim.opt.cursorline = false
 vim.opt.expandtab = false
 vim.opt.laststatus = 0
@@ -15,7 +14,6 @@ vim.opt.tabstop = 4
 vim.opt.termguicolors = true
 vim.opt.wildmenu = true
 vim.opt.cursorline = true
-vim.cmd("language ja_JP")
 require("vim._core.ui2").enable()
 
 vim.api.nvim_create_autocmd("TextYankPost", {
@@ -105,6 +103,9 @@ do
 	end, { expr = true })
 
 	vim.keymap.set("i", "<CR>", function()
+		if vim.fn.pumvisible() == 1 and vim.fn.complete_info({ "selected" }).selected ~= -1 then
+			return "<C-y>"
+		end
 		local p = prev_char()
 		if p:match("[%(%[{]") and ap[p] == next_char() then
 			return "<CR><Esc>O"
@@ -112,3 +113,116 @@ do
 		return "<CR>"
 	end, { expr = true })
 end
+
+-- LSP: TypeScript 7 native server, auto-attached by filetype
+vim.lsp.config("tsc", {
+	cmd = { "tsc", "--lsp", "--stdio" },
+	filetypes = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+	root_markers = { "tsconfig.json", "jsconfig.json", "package.json", ".git" },
+})
+vim.lsp.enable("tsc")
+
+-- blink-like completion menu (no plugin)
+vim.opt.completeopt = { "menuone", "noselect", "popup", "fuzzy" }
+vim.opt.pumborder = "rounded"
+vim.opt.pumheight = 12
+vim.opt.pummaxwidth = 60
+vim.opt.shortmess:append("c")
+
+local kind_icons = {
+	Text = "\u{eb8d}", Method = "\u{ea8c}", Function = "\u{ea8c}", Constructor = "\u{ea8c}",
+	Field = "\u{eb5f}", Variable = "\u{ea88}", Class = "\u{eb5b}", Interface = "\u{eb61}",
+	Module = "\u{ea8b}", Property = "\u{eb65}", Unit = "\u{ea96}", Value = "\u{ea90}",
+	Enum = "\u{ea95}", Keyword = "\u{eb62}", Snippet = "\u{eb66}", Color = "\u{eb5c}",
+	File = "\u{eb60}", Reference = "\u{eb36}", Folder = "\u{ea83}", EnumMember = "\u{eb5e}",
+	Constant = "\u{eb5d}", Struct = "\u{ea91}", Event = "\u{ea86}", Operator = "\u{eb64}",
+	TypeParameter = "\u{ea92}",
+}
+
+vim.api.nvim_create_autocmd("LspAttach", {
+	callback = function(ev)
+		local client = vim.lsp.get_client_by_id(ev.data.client_id)
+		if not client or not client:supports_method("textDocument/completion") then
+			return
+		end
+		-- trigger on every identifier keystroke, not just "." etc.
+		local provider = client.server_capabilities.completionProvider
+		local chars = provider.triggerCharacters or {}
+		for c in ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$"):gmatch(".") do
+			table.insert(chars, c)
+		end
+		provider.triggerCharacters = chars
+
+		vim.lsp.completion.enable(true, client.id, ev.buf, {
+			autotrigger = true,
+			convert = function(item)
+				local kind = vim.lsp.protocol.CompletionItemKind[item.kind] or "Text"
+				return {
+					abbr = item.label:gsub("%b()", ""),
+					kind = (kind_icons[kind] or "") .. " " .. kind,
+					kind_hlgroup = "Special",
+					menu = item.labelDetails and item.labelDetails.description or "",
+				}
+			end,
+		})
+	end,
+})
+
+vim.keymap.set("i", "<C-Space>", vim.lsp.completion.get)
+vim.keymap.set({ "i", "s" }, "<Tab>", function()
+	if vim.fn.pumvisible() == 1 then
+		return "<C-n>"
+	elseif vim.snippet.active({ direction = 1 }) then
+		return "<Cmd>lua vim.snippet.jump(1)<CR>"
+	end
+	return "<Tab>"
+end, { expr = true })
+vim.keymap.set({ "i", "s" }, "<S-Tab>", function()
+	if vim.fn.pumvisible() == 1 then
+		return "<C-p>"
+	elseif vim.snippet.active({ direction = -1 }) then
+		return "<Cmd>lua vim.snippet.jump(-1)<CR>"
+	end
+	return "<S-Tab>"
+end, { expr = true })
+
+-- error lens: tinted line + message at end of line
+local function blend(fg, bg, alpha)
+	local out = 0
+	for _, shift in ipairs({ 65536, 256, 1 }) do
+		local f, b = math.floor(fg / shift) % 256, math.floor(bg / shift) % 256
+		out = out + math.floor(f * alpha + b * (1 - alpha) + 0.5) * shift
+	end
+	return out
+end
+
+local severities = { "Error", "Warn", "Info", "Hint" }
+
+local function errorlens_hl()
+	local bg = vim.api.nvim_get_hl(0, { name = "Normal", link = false }).bg
+		or (vim.o.background == "light" and 0xffffff or 0x000000)
+	for _, s in ipairs(severities) do
+		local fg = vim.api.nvim_get_hl(0, { name = "Diagnostic" .. s, link = false }).fg
+		if fg then
+			vim.api.nvim_set_hl(0, "ErrorLens" .. s, { bg = blend(fg, bg, 0.12) })
+			vim.api.nvim_set_hl(0, "DiagnosticVirtualText" .. s, { fg = fg, bg = blend(fg, bg, 0.2) })
+		end
+	end
+end
+errorlens_hl()
+vim.api.nvim_create_autocmd("ColorScheme", { callback = errorlens_hl })
+
+local S = vim.diagnostic.severity
+vim.diagnostic.config({
+	severity_sort = true,
+	virtual_text = { prefix = "●", spacing = 4, source = "if_many" },
+	signs = {
+		linehl = {
+			[S.ERROR] = "ErrorLensError",
+			[S.WARN] = "ErrorLensWarn",
+			[S.INFO] = "ErrorLensInfo",
+			[S.HINT] = "ErrorLensHint",
+		},
+	},
+	float = { border = "rounded", source = "if_many" },
+})
